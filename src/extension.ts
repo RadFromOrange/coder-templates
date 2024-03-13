@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
-import { exec } from 'child_process';
+import { exec, ChildProcess } from 'child_process';
 
 function activate(context: vscode.ExtensionContext) {
     console.log('Script Manager activated.');
 
     let panel: vscode.WebviewPanel | undefined;
 
-    let scripts: string[] = [];
+    let scripts: { path: string; process?: ChildProcess }[] = [];
 
     const getWebViewContent = () => {
         return `
@@ -23,6 +23,9 @@ function activate(context: vscode.ExtensionContext) {
                     }
                     .script-item {
                         margin-top: 10px;
+                    }
+                    .status-icon {
+                        margin-left: 10px;
                     }
                 </style>
             </head>
@@ -51,13 +54,25 @@ function activate(context: vscode.ExtensionContext) {
                                 launchButton.innerText = 'Launch';
                                 launchButton.className = 'button primary';
                                 launchButton.addEventListener('click', () => {
-                                    vscode.postMessage({ command: 'launchScript', scriptPath: script });
+                                    vscode.postMessage({ command: 'launchScript', scriptPath: script.path });
                                 });
 
+                                const killButton = document.createElement('button');
+                                killButton.innerText = 'Kill';
+                                killButton.className = 'button';
+                                killButton.addEventListener('click', () => {
+                                    vscode.postMessage({ command: 'killScript', scriptPath: script.path });
+                                });
+
+                                const statusIcon = document.createElement('span');
+                                statusIcon.className = 'status-icon';
+                                
                                 const scriptItem = document.createElement('div');
                                 scriptItem.className = 'script-item';
-                                scriptItem.appendChild(document.createTextNode(script));
+                                scriptItem.appendChild(document.createTextNode(script.path));
                                 scriptItem.appendChild(launchButton);
+                                scriptItem.appendChild(killButton);
+                                scriptItem.appendChild(statusIcon);
                                 scriptList.appendChild(scriptItem);
                             });
                         }
@@ -66,6 +81,16 @@ function activate(context: vscode.ExtensionContext) {
             </body>
             </html>
         `;
+    };
+
+    const updateStatusIcon = (scriptPath: string, succeeded: boolean) => {
+        const scriptItem = document.querySelector(`.script-item:contains('${scriptPath}')`);
+        if (scriptItem) {
+            const statusIcon = scriptItem.querySelector('.status-icon');
+            if (statusIcon) {
+                statusIcon.textContent = succeeded ? '✅' : '❌';
+            }
+        }
     };
 
     vscode.commands.registerCommand('radou.helloWorld', function () {
@@ -82,22 +107,33 @@ function activate(context: vscode.ExtensionContext) {
             panel.webview.html = getWebViewContent();
 
             panel.webview.onDidReceiveMessage(
-                (message) => {
+                async (message) => {
                     switch (message.command) {
                         case 'addScript':
-                            vscode.window.showInputBox({ prompt: 'Enter script path:' }).then((scriptPath: string | undefined) => {
-                                if (scriptPath) {
-                                    scripts.push(scriptPath);
-                                    panel!.webview.postMessage({ command: 'updateScripts', scripts });
-                                }
-                            });
+                            const scriptPath = await vscode.window.showInputBox({ prompt: 'Enter script path:' });
+                            if (scriptPath) {
+                                scripts.push({ path: scriptPath });
+                                panel!.webview.postMessage({ command: 'updateScripts', scripts });
+                            }
                             return;
 
                         case 'launchScript':
-                            const scriptPath: string = message.scriptPath!;
-                            const terminal = vscode.window.createTerminal('Script Terminal');
-                            terminal.show();
-                            terminal.sendText(`bash ${scriptPath}`);
+                            const script = scripts.find(s => s.path === message.scriptPath);
+                            if (script) {
+                                script.process = exec(`bash ${script.path}`, (error, stdout, stderr) => {
+                                    if (!error) {
+                                        updateStatusIcon(script.path, true);
+                                    }
+                                });
+                            }
+                            return;
+
+                        case 'killScript':
+                            const scriptToKill = scripts.find(s => s.path === message.scriptPath);
+                            if (scriptToKill && scriptToKill.process) {
+                                scriptToKill.process.kill();
+                                updateStatusIcon(scriptToKill.path, false);
+                            }
                             return;
                     }
                 },
